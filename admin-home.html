@@ -1,0 +1,768 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Dashboard — EB Admin</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+<script src="js/theme.js"></script>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand-mark"><span class="id-chip">EB</span> <span class="brand-word">EB Admin</span></div>
+
+  <div class="header-search-desktop">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" class="search-input" id="searchInputDesktop" placeholder="Search batches...">
+    </div>
+  </div>
+
+  <div class="header-right">
+    <button class="icon-btn mobile-only" id="mobileSearchBtn" aria-label="Search">🔍</button>
+
+    <button class="avatar-btn" id="avatarBtn" aria-label="Open account menu">
+      <span id="avatarInitial">?</span>
+      <img id="avatarImg" style="display:none;" alt="Profile photo">
+    </button>
+
+    <div class="avatar-dropdown" id="avatarDropdown">
+      <div class="dropdown-user">
+        <div class="dd-avatar" id="ddAvatar">
+          <span id="ddAvatarInitial">?</span>
+          <img id="ddAvatarImg" style="display:none;" alt="Profile photo">
+        </div>
+        <div>
+          <div class="dd-name" id="ddName">—</div>
+          <div class="dd-id" id="ddId">—</div>
+        </div>
+      </div>
+      <div class="dropdown-menu">
+        <button id="menuSettings"><span class="dd-icon">⚙️</span> Settings</button>
+        <button id="navBatches"><span class="dd-icon">📚</span> Manage Batches</button>
+        <button id="navStudents"><span class="dd-icon">🎓</span> Manage Students</button>
+        <button id="navNotifications"><span class="dd-icon">🔔</span> Notifications</button>
+        <button id="navAdmins" style="display:none;"><span class="dd-icon">🛡️</span> Manage Admins</button>
+        <button data-theme-toggle id="menuTheme">
+          <span class="dd-icon" data-theme-icon>🖥️</span>
+          <span class="dd-label">Theme</span>
+          <span class="dd-mode" data-theme-label>Auto</span>
+        </button>
+        <div class="divider-line"></div>
+        <button id="menuLogout" class="danger"><span class="dd-icon">🚪</span> Log out</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="mobile-search-bar" id="mobileSearchBar">
+    <div class="search-box">
+      <span class="search-icon">🔍</span>
+      <input type="text" class="search-input" id="searchInputMobile" placeholder="Search batches...">
+    </div>
+  </div>
+</div>
+
+<div class="dash-wrap" id="dashWrap">
+  <div class="loading-block">Loading...</div>
+</div>
+
+<script src="js/config.js"></script>
+<script src="js/api.js"></script>
+<script>
+  requireAdminAuthOrRedirect();
+
+  const avatarBtn = document.getElementById("avatarBtn");
+  const avatarDropdown = document.getElementById("avatarDropdown");
+  const mobileSearchBtn = document.getElementById("mobileSearchBtn");
+  const mobileSearchBar = document.getElementById("mobileSearchBar");
+  const dashWrap = document.getElementById("dashWrap");
+  const searchInputs = document.querySelectorAll(".search-input");
+
+  let currentAdmin = null;
+  let currentSection = "batches";
+  let editingBatchId = null;
+  let searchDebounce = null;
+
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return "";
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function badge(status) {
+    const map = { pending: "badge-pending", active: "badge-active", blocked: "badge-blocked", rejected: "badge-rejected" };
+    return `<span class="badge ${map[status] || ""}">${escapeHtml(status)}</span>`;
+  }
+
+  function notifIcon(type) {
+    if (type === "image") return "🖼️";
+    if (type === "pdf") return "📄";
+    if (type === "video") return "🎬";
+    return "📢";
+  }
+
+  // ---------------- Header: avatar + dropdown + search ----------------
+
+  function applyAvatar(admin) {
+    const initial = (admin.first_name || "?").charAt(0).toUpperCase();
+    const photo = admin.photo_url;
+    ["avatarInitial", "ddAvatarInitial"].forEach((id) => { document.getElementById(id).textContent = initial; });
+    if (photo) {
+      document.getElementById("avatarImg").src = photo;
+      document.getElementById("avatarImg").style.display = "block";
+      document.getElementById("avatarInitial").style.display = "none";
+      document.getElementById("ddAvatarImg").src = photo;
+      document.getElementById("ddAvatarImg").style.display = "block";
+      document.getElementById("ddAvatarInitial").style.display = "none";
+    }
+    document.getElementById("ddName").textContent = [admin.first_name, admin.last_name].filter(Boolean).join(" ");
+    document.getElementById("ddId").textContent = `${admin.admin_id || ""} · ${admin.role === "owner" ? "OWNER" : "ADMIN"}`;
+    if (admin.role === "owner") document.getElementById("navAdmins").style.display = "flex";
+  }
+
+  avatarBtn.addEventListener("click", (e) => { e.stopPropagation(); avatarDropdown.classList.toggle("open"); });
+  document.addEventListener("click", (e) => {
+    if (!avatarDropdown.contains(e.target) && e.target !== avatarBtn) avatarDropdown.classList.remove("open");
+  });
+  mobileSearchBtn.addEventListener("click", () => {
+    mobileSearchBar.classList.toggle("open");
+    if (mobileSearchBar.classList.contains("open")) document.getElementById("searchInputMobile").focus();
+  });
+
+  document.getElementById("menuSettings").addEventListener("click", () => { window.location.href = "settings.html"; });
+  document.getElementById("navBatches").addEventListener("click", () => { currentSection = "batches"; render(); });
+  document.getElementById("navStudents").addEventListener("click", () => { currentSection = "students"; render(); });
+  document.getElementById("navNotifications").addEventListener("click", () => { currentSection = "notifications"; render(); });
+  document.getElementById("navAdmins").addEventListener("click", () => { currentSection = "admins"; render(); });
+  document.getElementById("menuLogout").addEventListener("click", () => {
+    AdminAuth.clearToken();
+    localStorage.removeItem("eb_admin");
+    window.location.href = "index.html";
+  });
+
+  searchInputs.forEach((input) => {
+    input.addEventListener("input", (e) => {
+      clearTimeout(searchDebounce);
+      const value = e.target.value;
+      searchInputs.forEach((other) => { if (other !== e.target) other.value = value; });
+      searchDebounce = setTimeout(() => { if (currentSection === "batches") loadBatches(value.trim()); }, 350);
+    });
+  });
+
+  function render() {
+    if (currentSection === "batches") renderBatchesSection();
+    else if (currentSection === "students") renderStudentsSection();
+    else if (currentSection === "admins") renderAdminsSection();
+    else if (currentSection === "notifications") renderNotificationsSection();
+  }
+
+  // ================= BATCHES (merged add/edit + day-wise content) =================
+
+  function renderBatchesSection() {
+    dashWrap.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 class="section-title" style="margin:0;">Batches</h2>
+        <button class="btn btn-ghost" id="addBatchBtn" style="width:auto; padding:8px 16px;">+ Add batch</button>
+      </div>
+
+      <div id="batchFormAlert" class="alert"></div>
+      <div id="batchFormPanel" style="display:none; margin-bottom:22px;" class="info-card">
+        <h3 id="batchFormTitle">Add batch</h3>
+        <form id="batchForm">
+          <div class="field-row cols-2">
+            <div><label>Title</label><input type="text" id="bfTitle" required></div>
+            <div><label>Subject</label><input type="text" id="bfSubject" placeholder="e.g. NEET, JEE"></div>
+          </div>
+          <div class="field-row cols-2">
+            <div><label>Instructor</label><input type="text" id="bfInstructor"></div>
+            <div><label>Language</label><input type="text" id="bfLanguage"></div>
+          </div>
+          <div class="field-row">
+            <div><label>Description</label><input type="text" id="bfDescription"></div>
+          </div>
+          <div class="field-row cols-3">
+            <div><label>Price (₹)</label><input type="number" id="bfPrice" step="0.01" min="0" value="0"></div>
+            <div><label>Offer price (₹) <span class="optional">(optional)</span></label><input type="number" id="bfOfferPrice" step="0.01" min="0"></div>
+            <div style="display:flex; align-items:flex-end; padding-bottom:10px;">
+              <label style="display:flex; align-items:center; gap:8px; font-weight:600; font-size:13.5px;">
+                <input type="checkbox" id="bfIsFree" style="width:auto;"> This batch is free
+              </label>
+            </div>
+          </div>
+          <div class="field-row">
+            <div><label>Thumbnail photo <span class="optional">(manually uploaded)</span></label><input type="file" id="bfThumbnail" accept="image/png,image/jpeg,image/webp,image/gif"></div>
+          </div>
+          <button type="submit" class="btn btn-primary" id="bfSubmitBtn" style="width:auto; padding:9px 20px;">Save batch</button>
+          <button type="button" class="btn btn-ghost" id="bfCancelBtn" style="width:auto; padding:9px 20px;">Cancel</button>
+        </form>
+
+        <div id="contentSection" style="display:none; margin-top:26px; border-top:1px solid var(--line); padding-top:20px;">
+          <h3>Content (day-wise)</h3>
+          <p class="card-sub" style="margin:0 0 14px;">Add each day's material below — a day can have more than one video, PDF, or image.</p>
+          <div id="contentAlert" class="alert"></div>
+          <div id="contentByDay"><div class="loading-block">Loading content...</div></div>
+
+          <h4 style="margin:20px 0 10px;">Add material</h4>
+          <form id="contentForm">
+            <div class="field-row cols-3">
+              <div><label>Day</label><input type="number" id="cfDay" min="1" value="1"></div>
+              <div>
+                <label>Type</label>
+                <select id="cfType">
+                  <option value="video">Video</option>
+                  <option value="pdf">PDF notes (upload)</option>
+                  <option value="image">Image (upload)</option>
+                </select>
+              </div>
+              <div><label>Title</label><input type="text" id="cfTitle" required></div>
+            </div>
+            <div class="field-row cols-2">
+              <div id="cfUrlWrap"><label>Video link <span class="optional">(external, e.g. YouTube)</span></label><input type="text" id="cfUrl" placeholder="https://..."></div>
+              <div id="cfFileWrap" style="display:none;"><label>Or upload a video file <span class="optional">(mp4/webm/mov)</span></label><input type="file" id="cfFile"></div>
+            </div>
+            <button type="submit" class="btn btn-primary" id="cfSubmitBtn" style="width:auto; padding:9px 20px;">Add material</button>
+          </form>
+        </div>
+      </div>
+
+      <div id="pendingDeletionPanel" style="display:none; margin-bottom:22px;">
+        <h3 style="margin:0 0 12px;">Pending Deletion Requests</h3>
+        <div class="data-table-wrap">
+          <table class="data-table" id="pendingDeletionTable">
+            <thead><tr><th>Title</th><th>Requested</th><th>Actions</th></tr></thead>
+            <tbody><tr><td colspan="3">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="data-table-wrap">
+        <table class="data-table" id="batchesTable">
+          <thead><tr><th>Photo</th><th>Title</th><th>Subject</th><th>Price</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody><tr><td colspan="6">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    `;
+
+    document.getElementById("addBatchBtn").addEventListener("click", () => openBatchForm(null));
+    document.getElementById("bfCancelBtn").addEventListener("click", closeBatchForm);
+    document.getElementById("batchForm").addEventListener("submit", submitBatchForm);
+    document.getElementById("contentForm").addEventListener("submit", submitContentForm);
+
+    document.getElementById("cfType").addEventListener("change", (e) => {
+      const isVideo = e.target.value === "video";
+      document.getElementById("cfUrlWrap").style.display = isVideo ? "block" : "none";
+      document.getElementById("cfFileWrap").style.display = isVideo ? "block" : "none";
+      if (!isVideo) document.getElementById("cfUrlWrap").style.display = "none";
+    });
+
+    if (currentAdmin.role === "owner") {
+      document.getElementById("pendingDeletionPanel").style.display = "block";
+      loadPendingDeletions();
+    }
+
+    loadBatches();
+  }
+
+  function openBatchForm(batch) {
+    editingBatchId = batch ? batch.id : null;
+    document.getElementById("batchFormTitle").textContent = batch ? `Edit batch — ${batch.title}` : "Add batch";
+    document.getElementById("bfTitle").value = batch ? batch.title : "";
+    document.getElementById("bfSubject").value = batch ? (batch.subject || "") : "";
+    document.getElementById("bfInstructor").value = batch ? (batch.instructor || "") : "";
+    document.getElementById("bfLanguage").value = batch ? (batch.language || "") : "";
+    document.getElementById("bfDescription").value = batch ? (batch.description || "") : "";
+    document.getElementById("bfPrice").value = batch ? batch.price : 0;
+    document.getElementById("bfOfferPrice").value = batch && batch.offer_price !== null ? batch.offer_price : "";
+    document.getElementById("bfIsFree").checked = batch ? !!batch.is_free : false;
+    document.getElementById("bfThumbnail").value = "";
+    document.getElementById("batchFormPanel").style.display = "block";
+    hideAlert(document.getElementById("batchFormAlert"));
+
+    const contentSection = document.getElementById("contentSection");
+    if (batch) {
+      contentSection.style.display = "block";
+      loadContent();
+    } else {
+      contentSection.style.display = "none";
+    }
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  function closeBatchForm() {
+    editingBatchId = null;
+    document.getElementById("batchFormPanel").style.display = "none";
+  }
+
+  async function submitBatchForm(e) {
+    e.preventDefault();
+    const alertBox = document.getElementById("batchFormAlert");
+    hideAlert(alertBox);
+
+    const title = document.getElementById("bfTitle").value.trim();
+    if (!title) { showAlert(alertBox, "Title is required."); return; }
+
+    const formData = new FormData();
+    formData.append("title", title);
+    formData.append("subject", document.getElementById("bfSubject").value.trim());
+    formData.append("instructor", document.getElementById("bfInstructor").value.trim());
+    formData.append("language", document.getElementById("bfLanguage").value.trim());
+    formData.append("description", document.getElementById("bfDescription").value.trim());
+    formData.append("price", document.getElementById("bfPrice").value || "0");
+    formData.append("offer_price", document.getElementById("bfOfferPrice").value || "");
+    formData.append("is_free", document.getElementById("bfIsFree").checked ? "1" : "0");
+    const thumbFile = document.getElementById("bfThumbnail").files[0];
+    if (thumbFile) formData.append("thumbnail", thumbFile);
+
+    const btn = document.getElementById("bfSubmitBtn");
+    setLoading(btn, true, "Saving...");
+    const isNew = !editingBatchId;
+    const path = editingBatchId ? `/api/admin/batches/${editingBatchId}` : "/api/admin/batches";
+    const res = await adminApiUploadMethod(path, formData, editingBatchId ? "PUT" : "POST");
+    setLoading(btn, false);
+
+    if (!res.success) { showAlert(alertBox, res.message || "Failed to save batch."); return; }
+    showAlert(alertBox, "Batch saved.", "success");
+
+    if (isNew && res.batch_id) {
+      // Immediately switch into edit mode so content can be added right away.
+      editingBatchId = res.batch_id;
+      document.getElementById("batchFormTitle").textContent = `Edit batch — ${title}`;
+      document.getElementById("contentSection").style.display = "block";
+      loadContent();
+    }
+    loadBatches();
+  }
+
+  async function loadBatches(search = "") {
+    const res = await adminApiRequest("/api/admin/batches", { method: "GET", auth: true });
+    const tbody = document.querySelector("#batchesTable tbody");
+    if (!res.success) { tbody.innerHTML = `<tr><td colspan="6">${escapeHtml(res.message || "Failed to load.")}</td></tr>`; return; }
+
+    let batches = res.batches;
+    if (search) {
+      const q = search.toLowerCase();
+      batches = batches.filter((b) => (b.title || "").toLowerCase().includes(q) || (b.subject || "").toLowerCase().includes(q));
+    }
+
+    if (!batches.length) { tbody.innerHTML = `<tr><td colspan="6">No batches found.</td></tr>`; return; }
+
+    tbody.innerHTML = batches.map((b) => `
+      <tr>
+        <td>${b.thumbnail_url ? `<img src="${b.thumbnail_url}" style="width:44px;height:44px;object-fit:cover;border-radius:8px;">` : "—"}</td>
+        <td class="wrap">${escapeHtml(b.title)}</td>
+        <td>${escapeHtml(b.subject || "—")}</td>
+        <td>${b.is_free ? "Free" : (b.offer_price !== null ? `<s style="color:var(--text-muted);">₹${b.price}</s> ₹${b.offer_price}` : `₹${b.price}`)}</td>
+        <td>${b.pending_deletion ? `<span class="badge badge-blocked">Deletion pending</span>` : `<span class="badge badge-active">Live</span>`}</td>
+        <td>
+          <div class="row-actions">
+            <button class="mini-btn" data-action="edit" data-id="${b.id}">Edit</button>
+            <button class="mini-btn danger" data-action="delete" data-id="${b.id}">${currentAdmin.role === "owner" ? "Delete" : "Request delete"}</button>
+          </div>
+        </td>
+      </tr>
+    `).join("");
+
+    tbody.querySelectorAll("button[data-action='edit']").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const b = batches.find((x) => x.id == btn.dataset.id);
+        openBatchForm(b);
+      });
+    });
+    tbody.querySelectorAll("button[data-action='delete']").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm(currentAdmin.role === "owner" ? "Delete this batch permanently?" : "Request deletion of this batch? The CEO will need to approve it.")) return;
+        const res = await adminApiRequest(`/api/admin/batches/${btn.dataset.id}`, { method: "DELETE", auth: true });
+        alert(res.message || "");
+        loadBatches();
+        if (currentAdmin.role === "owner") loadPendingDeletions();
+      });
+    });
+  }
+
+  async function loadPendingDeletions() {
+    const res = await adminApiRequest("/api/owner/batches/pending-deletion", { method: "GET", auth: true });
+    const tbody = document.querySelector("#pendingDeletionTable tbody");
+    if (!res.success) { tbody.innerHTML = `<tr><td colspan="3">${escapeHtml(res.message || "Failed to load.")}</td></tr>`; return; }
+    if (!res.batches.length) { tbody.innerHTML = `<tr><td colspan="3">No pending deletion requests.</td></tr>`; return; }
+
+    tbody.innerHTML = res.batches.map((b) => `
+      <tr>
+        <td class="wrap">${escapeHtml(b.title)}</td>
+        <td>Requested</td>
+        <td>
+          <div class="row-actions">
+            <button class="mini-btn" data-action="reject-del" data-id="${b.id}">Reject</button>
+            <button class="mini-btn danger" data-action="approve-del" data-id="${b.id}">Approve delete</button>
+          </div>
+        </td>
+      </tr>
+    `).join("");
+
+    tbody.querySelectorAll("button[data-action='approve-del']").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Permanently delete this batch?")) return;
+        await adminApiRequest(`/api/owner/batches/${btn.dataset.id}/approve-deletion`, { method: "POST", auth: true });
+        loadPendingDeletions();
+        loadBatches();
+      });
+    });
+    tbody.querySelectorAll("button[data-action='reject-del']").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await adminApiRequest(`/api/owner/batches/${btn.dataset.id}/reject-deletion`, { method: "POST", auth: true });
+        loadPendingDeletions();
+        loadBatches();
+      });
+    });
+  }
+
+  // ---- Day-wise content, inline inside the batch editor ----
+
+  async function loadContent() {
+    const res = await adminApiRequest(`/api/admin/batches/${editingBatchId}/content`, { method: "GET", auth: true });
+    const container = document.getElementById("contentByDay");
+    if (!res.success) { container.innerHTML = `<div class="empty-state">${escapeHtml(res.message || "Failed to load.")}</div>`; return; }
+    if (!res.content.length) { container.innerHTML = `<div class="card-sub">No material added yet — add Day 1 below.</div>`; return; }
+
+    const days = {};
+    res.content.forEach((c) => { (days[c.day_number] = days[c.day_number] || []).push(c); });
+
+    container.innerHTML = Object.keys(days).sort((a, b) => a - b).map((day) => `
+      <div class="day-group">
+        <h4 class="day-heading">Day ${day}</h4>
+        ${days[day].map((c) => `
+          <div class="day-item-row">
+            <span>${notifIcon(c.content_type === "video" ? "video" : c.content_type)} ${escapeHtml(c.title)} <span style="color:var(--text-muted);">(${escapeHtml(c.content_type)})</span></span>
+            <button class="mini-btn danger" data-action="del-content" data-id="${c.id}">Remove</button>
+          </div>
+        `).join("")}
+      </div>
+    `).join("");
+
+    container.querySelectorAll("button[data-action='del-content']").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        await adminApiRequest(`/api/admin/batches/${editingBatchId}/content/${btn.dataset.id}`, { method: "DELETE", auth: true });
+        loadContent();
+      });
+    });
+  }
+
+  async function submitContentForm(e) {
+    e.preventDefault();
+    const alertBox = document.getElementById("contentAlert");
+    hideAlert(alertBox);
+
+    const type = document.getElementById("cfType").value;
+    const title = document.getElementById("cfTitle").value.trim();
+    const day = document.getElementById("cfDay").value || "1";
+    if (!title) { showAlert(alertBox, "Title is required."); return; }
+
+    const formData = new FormData();
+    formData.append("content_type", type);
+    formData.append("title", title);
+    formData.append("day_number", day);
+
+    if (type === "video") {
+      const url = document.getElementById("cfUrl").value.trim();
+      const file = document.getElementById("cfFile").files[0];
+      if (!url && !file) { showAlert(alertBox, "Provide a video link or upload a video file."); return; }
+      if (file) formData.append("file", file);
+      else formData.append("url", url);
+    } else {
+      const file = document.getElementById("cfFile").files[0];
+      if (!file) { showAlert(alertBox, "Please choose a file to upload."); return; }
+      formData.append("file", file);
+    }
+
+    const btn = document.getElementById("cfSubmitBtn");
+    setLoading(btn, true, "Adding...");
+    const res = await adminApiUpload(`/api/admin/batches/${editingBatchId}/content`, formData);
+    setLoading(btn, false);
+
+    if (!res.success) { showAlert(alertBox, res.message || "Failed to add content."); return; }
+    document.getElementById("contentForm").reset();
+    document.getElementById("cfDay").value = day;
+    loadContent();
+  }
+
+  // ================= STUDENTS =================
+
+  function renderStudentsSection() {
+    dashWrap.innerHTML = `
+      <h2 class="section-title">Students</h2>
+      <div class="data-table-wrap">
+        <table class="data-table" id="usersTable">
+          <thead><tr><th>EB ID</th><th>Name</th><th>Email</th><th>Phone</th><th>College</th><th>Verified</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody><tr><td colspan="8">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    `;
+    loadUsers();
+  }
+
+  async function loadUsers() {
+    const res = await adminApiRequest("/api/admin/users", { method: "GET", auth: true });
+    const tbody = document.querySelector("#usersTable tbody");
+    if (!res.success) { tbody.innerHTML = `<tr><td colspan="8">${escapeHtml(res.message || "Failed to load.")}</td></tr>`; return; }
+    if (!res.users.length) { tbody.innerHTML = `<tr><td colspan="8">No students yet.</td></tr>`; return; }
+
+    tbody.innerHTML = res.users.map((u) => `
+      <tr>
+        <td>${escapeHtml(u.user_id || "—")}</td>
+        <td class="wrap">${escapeHtml([u.first_name, u.middle_name, u.last_name].filter(Boolean).join(" "))}</td>
+        <td>${escapeHtml(u.email)}</td>
+        <td>${escapeHtml(u.phone)}</td>
+        <td class="wrap">${escapeHtml(u.college || "—")}</td>
+        <td>${u.email_verified ? "Yes" : "No"}</td>
+        <td>${u.is_blocked ? badge("blocked") : badge("active")}</td>
+        <td>
+          <div class="row-actions">
+            ${u.is_blocked
+              ? `<button class="mini-btn" data-action="unblock-user" data-id="${u.id}">Unblock</button>`
+              : `<button class="mini-btn" data-action="block-user" data-id="${u.id}">Block</button>`
+            }
+            <button class="mini-btn danger" data-action="delete-user" data-id="${u.id}">Remove</button>
+          </div>
+        </td>
+      </tr>
+    `).join("");
+
+    tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.action;
+        const id = btn.dataset.id;
+        if (action === "delete-user") {
+          if (!confirm("Remove this student permanently?")) return;
+          await adminApiRequest(`/api/admin/users/${id}`, { method: "DELETE", auth: true });
+        } else if (action === "block-user") {
+          await adminApiRequest(`/api/admin/users/${id}/block`, { method: "POST", auth: true });
+        } else if (action === "unblock-user") {
+          await adminApiRequest(`/api/admin/users/${id}/unblock`, { method: "POST", auth: true });
+        }
+        loadUsers();
+      });
+    });
+  }
+
+  // ================= NOTIFICATIONS =================
+
+  function renderNotificationsSection() {
+    dashWrap.innerHTML = `
+      <h2 class="section-title">Notifications</h2>
+      <div class="info-card" style="margin-bottom:20px;">
+        <h3>Send a notification</h3>
+        <p class="card-sub" style="margin:0 0 14px;">Goes out to every student. Attach an image, PDF, or video if you like — it'll show a thumbnail.</p>
+        <div id="notifFormAlert" class="alert"></div>
+        <form id="notifForm">
+          <div class="field-row">
+            <div><label>Message</label><input type="text" id="nfMessage" placeholder="e.g. New batch launching this weekend!"></div>
+          </div>
+          <div class="field-row">
+            <div><label>Attachment <span class="optional">(optional — image, PDF, or video)</span></label><input type="file" id="nfAttachment" accept="image/*,application/pdf,video/mp4,video/webm,video/quicktime"></div>
+          </div>
+          <button type="submit" class="btn btn-primary" id="nfSubmitBtn" style="width:auto; padding:9px 20px;">Send notification</button>
+        </form>
+      </div>
+
+      <h3 style="margin:0 0 12px;">Sent notifications</h3>
+      <div class="info-card" id="notifListCard">
+        <div class="loading-block">Loading...</div>
+      </div>
+    `;
+
+    document.getElementById("notifForm").addEventListener("submit", submitNotification);
+    loadSentNotifications();
+  }
+
+  async function submitNotification(e) {
+    e.preventDefault();
+    const alertBox = document.getElementById("notifFormAlert");
+    hideAlert(alertBox);
+
+    const message = document.getElementById("nfMessage").value.trim();
+    const file = document.getElementById("nfAttachment").files[0];
+    if (!message && !file) { showAlert(alertBox, "Add a message or an attachment."); return; }
+
+    const formData = new FormData();
+    formData.append("message", message);
+    if (file) formData.append("attachment", file);
+
+    const btn = document.getElementById("nfSubmitBtn");
+    setLoading(btn, true, "Sending...");
+    const res = await adminApiUpload("/api/admin/notifications", formData);
+    setLoading(btn, false);
+
+    if (!res.success) { showAlert(alertBox, res.message || "Failed to send."); return; }
+    showAlert(alertBox, "Notification sent.", "success");
+    document.getElementById("notifForm").reset();
+    loadSentNotifications();
+  }
+
+  async function loadSentNotifications() {
+    const res = await adminApiRequest("/api/admin/notifications", { method: "GET", auth: true });
+    const card = document.getElementById("notifListCard");
+    if (!res.success) { card.innerHTML = `<div class="empty-state">${escapeHtml(res.message || "Failed to load.")}</div>`; return; }
+    if (!res.notifications.length) { card.innerHTML = `<div class="card-sub">No notifications sent yet.</div>`; return; }
+
+    card.innerHTML = res.notifications.map((n) => `
+      <div class="notif-item">
+        ${n.thumbnail_url
+          ? `<img class="notif-thumb" src="${n.thumbnail_url}" alt="">`
+          : `<div class="notif-thumb notif-thumb-icon">${notifIcon(n.attachment_type)}</div>`
+        }
+        <div class="notif-body">
+          <div>
+            <div class="notif-text">${escapeHtml(n.message || "(no message)")}</div>
+            <div class="notif-time">${new Date(n.created_at.replace(" ", "T") + "Z").toLocaleString()}</div>
+          </div>
+          <button class="mini-btn danger" data-action="del-notif" data-id="${n.id}">Delete</button>
+        </div>
+      </div>
+    `).join("");
+
+    card.querySelectorAll("button[data-action='del-notif']").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!confirm("Delete this notification?")) return;
+        await adminApiRequest(`/api/admin/notifications/${btn.dataset.id}`, { method: "DELETE", auth: true });
+        loadSentNotifications();
+      });
+    });
+  }
+
+  // ================= ADMINS (owner only) =================
+
+  function renderAdminsSection() {
+    dashWrap.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+        <h2 class="section-title" style="margin:0;">Admins</h2>
+        <button class="btn btn-ghost" id="addAdminBtn" style="width:auto; padding:8px 16px;">+ Add admin</button>
+      </div>
+      <div id="addAdminAlert" class="alert"></div>
+      <div id="addAdminForm" style="display:none; margin-bottom:20px;" class="info-card">
+        <div class="field-row cols-3">
+          <div><label>First name</label><input type="text" id="newAdminFirst"></div>
+          <div><label>Last name</label><input type="text" id="newAdminLast"></div>
+          <div><label>Phone</label><input type="text" id="newAdminPhone"></div>
+        </div>
+        <div class="field-row cols-2">
+          <div><label>Email</label><input type="email" id="newAdminEmail"></div>
+          <div><label>Password</label><input type="password" id="newAdminPassword"></div>
+        </div>
+        <button class="btn btn-primary" id="submitNewAdminBtn" style="width:auto; padding:9px 18px;">Create admin</button>
+      </div>
+      <div class="data-table-wrap">
+        <table class="data-table" id="adminsTable">
+          <thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Phone</th><th>Role</th><th>Status</th><th>Docs</th><th>Actions</th></tr></thead>
+          <tbody><tr><td colspan="8">Loading...</td></tr></tbody>
+        </table>
+      </div>
+    `;
+
+    document.getElementById("addAdminBtn").addEventListener("click", () => {
+      const form = document.getElementById("addAdminForm");
+      form.style.display = form.style.display === "none" ? "block" : "none";
+    });
+    document.getElementById("submitNewAdminBtn").addEventListener("click", addAdmin);
+    loadAdmins();
+  }
+
+  async function loadAdmins() {
+    const res = await adminApiRequest("/api/owner/admins", { method: "GET", auth: true });
+    const tbody = document.querySelector("#adminsTable tbody");
+    if (!res.success) { tbody.innerHTML = `<tr><td colspan="8">${escapeHtml(res.message || "Failed to load.")}</td></tr>`; return; }
+    if (!res.admins.length) { tbody.innerHTML = `<tr><td colspan="8">No admins yet.</td></tr>`; return; }
+
+    tbody.innerHTML = res.admins.map((a) => `
+      <tr>
+        <td>${escapeHtml(a.admin_id || "—")}</td>
+        <td class="wrap">${escapeHtml([a.first_name, a.middle_name, a.last_name].filter(Boolean).join(" "))}</td>
+        <td>${escapeHtml(a.email)}</td>
+        <td>${escapeHtml(a.phone)}</td>
+        <td>${escapeHtml(a.role)}</td>
+        <td>${badge(a.status)}</td>
+        <td>
+          ${a.photo_url ? `<a class="doc-link" href="${a.photo_url}" target="_blank">Photo</a>` : ""}
+          ${a.cv_url ? ` · <a class="doc-link" href="${a.cv_url}" target="_blank">CV</a>` : ""}
+        </td>
+        <td>
+          <div class="row-actions">
+            ${a.role === "owner" ? "" : a.status === "blocked"
+              ? `<button class="mini-btn" data-action="unblock" data-id="${a.id}">Unblock</button>`
+              : `<button class="mini-btn" data-action="block" data-id="${a.id}">Block</button>`
+            }
+            ${a.role === "owner" ? "" : `<button class="mini-btn danger" data-action="delete-admin" data-id="${a.id}">Remove</button>`}
+          </div>
+        </td>
+      </tr>
+    `).join("");
+
+    tbody.querySelectorAll("button[data-action]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const action = btn.dataset.action, id = btn.dataset.id;
+        if (action === "delete-admin") {
+          if (!confirm("Remove this admin permanently?")) return;
+          await adminApiRequest(`/api/owner/admins/${id}`, { method: "DELETE", auth: true });
+        } else if (action === "block") {
+          await adminApiRequest(`/api/owner/admins/${id}/block`, { method: "POST", auth: true });
+        } else if (action === "unblock") {
+          await adminApiRequest(`/api/owner/admins/${id}/unblock`, { method: "POST", auth: true });
+        }
+        loadAdmins();
+      });
+    });
+  }
+
+  async function addAdmin() {
+    const alertBox = document.getElementById("addAdminAlert");
+    hideAlert(alertBox);
+    const payload = {
+      first_name: document.getElementById("newAdminFirst").value.trim(),
+      last_name: document.getElementById("newAdminLast").value.trim(),
+      phone: document.getElementById("newAdminPhone").value.trim(),
+      email: document.getElementById("newAdminEmail").value.trim(),
+      password: document.getElementById("newAdminPassword").value,
+    };
+    if (!payload.first_name || !payload.last_name || !payload.phone || !payload.email || !payload.password) {
+      showAlert(alertBox, "Please fill in all fields.");
+      return;
+    }
+    const res = await adminApiRequest("/api/owner/admins", { method: "POST", auth: true, body: payload });
+    if (!res.success) { showAlert(alertBox, res.message || "Failed to add admin."); return; }
+    showAlert(alertBox, `Admin created: ${res.admin_id}`, "success");
+    document.getElementById("addAdminForm").style.display = "none";
+    loadAdmins();
+  }
+
+  // ---------------- helper: upload with PUT/POST ----------------
+
+  async function adminApiUploadMethod(path, formData, method) {
+    const token = AdminAuth.getToken();
+    let response;
+    try {
+      response = await fetch(`${API_BASE_URL}${path}`, {
+        method,
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        body: formData,
+      });
+    } catch (err) {
+      return { success: false, message: "Could not reach the server." };
+    }
+    try { return await response.json(); } catch (err) { return { success: false, message: "Unexpected server response." }; }
+  }
+
+  // ---------------- Entry point ----------------
+
+  async function init() {
+    const res = await adminApiRequest("/api/admin/profile", { method: "GET", auth: true });
+    if (!res.success) { window.location.href = "index.html"; return; }
+    currentAdmin = res.admin;
+    localStorage.setItem("eb_admin", JSON.stringify(currentAdmin));
+    applyAvatar(currentAdmin);
+    render();
+  }
+
+  init();
+</script>
+</body>
+</html>
